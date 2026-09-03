@@ -1,0 +1,685 @@
+---
+title: "Inside the U.S. Congress: Representation, Performance & Power"
+author: "Gargi Dey"
+date: "2026-08-24"
+output: html_document
+---
+
+## 1. Project Overview
+
+An election is often described in simple terms: a candidate either wins or loses. But congressional elections tell a much bigger story. How many votes a candidate receives, which party they belong to, who is represented in Congress, and what happens after they are elected can all be part of the same political story.
+
+This project uses congressional data from 1973 to 2018 to explore that story. Rather than looking only at election outcomes, the analysis follows congressional members from the voting booth into Congress. It examines their vote share, party affiliation, demographic characteristics, experience, majority-party status, political power, and leadership positions.
+
+The analysis begins by asking how the composition of Congress has changed over time. It then looks at whether electoral performance differs across political and demographic groups. Finally, it asks whether the same characteristics are associated with belonging to the majority party.
+
+The purpose is not to claim that any single characteristic causes an election result. Instead, the goal is to identify patterns in the data and understand how electoral performance, representation, party control, experience, and political power are connected.
+
+The analysis therefore moves through three stages:
+
+1. **Who gets elected?** — examining representation, party composition, and vote share.
+2. **What happens after election?** — examining seniority, political power, and leadership.
+3. **What does the statistical evidence tell us?** — using regression models to examine the relationships between these characteristics and electoral outcomes.
+
+The main questions are:
+
+1. How has congressional representation changed over time?
+2. How are party affiliation, demographic characteristics, majority-party status, and seniority associated with electoral performance?
+3. How are these characteristics associated with majority-party membership?
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(tidyverse)
+library(gganimate)
+library(gifski)
+library(car)
+library(lmtest)
+library(sandwich)
+```
+
+## 2. Data Preparation
+
+### Loading the raw dataset
+
+The raw CESS dataset contains 10,262 observations and 38 variables. The analysis uses a subset of variables relevant to representation, electoral performance, seniority, political power, and leadership.
+
+```{r data-loading}
+cess <- read.csv(
+  file.path("data", "cess.csv"),
+  stringsAsFactors = TRUE
+)
+
+cat("Raw dataset:", nrow(cess), "observations and", ncol(cess), "variables.")
+```
+
+### Variable selection
+
+```{r variable-selection}
+cess_analysis <- cess %>%
+  select(
+    year, st_name, dem, female, afam, latino,
+    majority, votepct, seniority, power,
+    speaker, chair, subchr, maj_leader, min_leader
+  )
+
+cat("Analysis dataset:", nrow(cess_analysis), "observations and",
+    ncol(cess_analysis), "variables.")
+```
+
+### Data structure and descriptive statistics
+
+Binary variables are treated as categorical factors, while vote percentage and seniority remain numeric.
+
+```{r factor-variables}
+cess_analysis <- cess_analysis %>%
+  mutate(
+    st_name = factor(st_name),
+    dem = factor(dem),
+    female = factor(female),
+    afam = factor(afam),
+    latino = factor(latino),
+    majority = factor(majority),
+    power = factor(power),
+    speaker = factor(speaker),
+    chair = factor(chair),
+    subchr = factor(subchr),
+    maj_leader = factor(maj_leader),
+    min_leader = factor(min_leader)
+  )
+
+str(cess_analysis)
+```
+
+```{r data-overview}
+summary(cess_analysis)
+```
+The dataset gives us a picture of Congress at two levels. At the electoral level, we can see how members performed at the polls through their vote percentage. At the institutional level, we can see their party, majority-party status, seniority, political power, and leadership positions.
+
+This allows the analysis to move beyond the question of who received votes and toward a broader question: once members enter Congress, how is political representation connected to influence and power?
+
+
+## 3. Exploratory Visualizations
+
+### African American Representation Over Time
+
+```{r afam-animation, fig.align="center"}
+afam_year <- cess_analysis %>%
+  filter(afam == "1") %>%
+  count(year, name = "African_American")
+
+afam_animation <- ggplot(
+  afam_year,
+  aes(x = year, y = African_American, group = 1)
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  labs(
+    title = "African American Representation in the U.S. Congress",
+    subtitle = "Year: {frame_along}",
+    x = "Year",
+    y = "Number of African American Members"
+  ) +
+  theme_minimal() +
+  transition_reveal(year)
+
+animate(
+  afam_animation,
+  nframes = 46,
+  fps = 5,
+  width = 800,
+  height = 500,
+  renderer = gifski_renderer()
+)
+```
+
+### What this tells us
+
+The first part of the story is representation. The number of African American members changes over the period covered by the dataset, showing that the composition of Congress was not static.
+
+This matters because electoral politics is not only about how many votes candidates receive. It is also about who is represented once those elections are over. The changing representation seen here provides the background for examining whether electoral performance and access to political power look the same across different groups.
+
+### Party Composition Over Time
+
+```{r party-composition}
+party_year <- cess_analysis %>%
+  count(year, dem) %>%
+  group_by(year) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  ungroup()
+
+ggplot(party_year, aes(x = year, y = percent, fill = dem)) +
+  geom_area() +
+  scale_fill_manual(
+    values = c("0" = "pink", "1" = "blue"),
+    labels = c("0" = "Republican", "1" = "Democratic"),
+    name = "Party"
+  ) +
+  labs(
+    title = "Changing Party Composition of Congress",
+    x = "Year",
+    y = "Percentage of Congress"
+  ) +
+  theme_minimal()
+```
+### From representation to political control
+
+Representation is only one part of the electoral story. The next question is: who controls Congress?
+
+The party composition changes across the years, showing that congressional control is not permanently held by one party. The balance between Democrats and Republicans shifts over time, creating different political environments for members of Congress.
+
+This is important for the rest of the analysis because being part of the majority party is different from simply receiving a high percentage of votes. A candidate can perform strongly in an individual election, while the overall balance of power in Congress depends on the wider distribution of seats between the two parties.
+
+### Party Balance Over Time
+
+```{r party-animation}
+party_dumbbell <- cess_analysis %>%
+  count(year, dem) %>%
+  group_by(year) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  ungroup() %>%
+  mutate(party = ifelse(dem == "1", "Democratic", "Republican")) %>%
+  select(year, party, percent) %>%
+  pivot_wider(names_from = party, values_from = percent)
+
+p_party <- ggplot(party_dumbbell) +
+  geom_segment(aes(x = Republican, xend = Democratic, y = 1, yend = 1),
+               linewidth = 1) +
+  geom_point(aes(x = Republican, y = 1), size = 4) +
+  geom_point(aes(x = Democratic, y = 1), size = 4) +
+  scale_x_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Democratic–Republican Balance: {frame_time}",
+    x = "Share of Congress (%)",
+    y = NULL
+  ) +
+  theme_minimal() +
+  transition_time(year) +
+  ease_aes("linear")
+
+animate(
+  p_party,
+  nframes = 100,
+  fps = 10,
+  width = 800,
+  height = 500,
+  renderer = gifski_renderer()
+)
+```
+### What changes when the political balance changes?
+
+The animation makes the changing party balance easier to see. Across the period, neither party occupies the same position in Congress at every point in time.
+
+This gives us an important context for understanding majority-party membership. Majority status is not simply a measure of how many votes an individual member received. It is connected to the broader political balance of Congress.
+
+With that context in mind, we can now turn from the composition of Congress to the performance of individual candidates at the polls.
+
+### Electoral Performance by Party
+
+```{r voting-performance-party}
+vote_data <- cess_analysis %>%
+  filter(!is.na(votepct)) %>%
+  mutate(Party = ifelse(dem == "1", "Democratic", "Republican"))
+
+ggplot(vote_data, aes(x = Party, y = votepct, fill = Party)) +
+  geom_violin(alpha = 0.6, trim = FALSE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.alpha = 0.2) +
+  labs(
+    title = "Electoral Performance by Party",
+    subtitle = "Distribution of vote percentages",
+    x = NULL,
+    y = "Vote Percentage (%)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+### What does voting performance look like?
+
+The distribution of vote percentages shows that electoral performance varies considerably within both parties. Party affiliation alone does not determine how well an individual candidate performs.
+
+This is an important point. Elections are not simply a competition between two parties where every member of one party performs in the same way. Individual candidates receive different levels of electoral support.
+
+The next step is therefore to look beyond party and examine how representation has changed across demographic groups as well.
+
+### Racial Representation Over Time
+
+```{r racial-representation-animation}
+race_data <- cess_analysis %>%
+  group_by(year) %>%
+  summarise(
+    African_American = sum(afam == "1", na.rm = TRUE),
+    Latino = sum(latino == "1", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(African_American, Latino),
+    names_to = "Group",
+    values_to = "Count"
+  )
+
+race_plot <- ggplot(race_data, aes(x = Group, y = Count, fill = Group)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = Count), vjust = -0.3, size = 4) +
+  labs(
+    title = "Representation of African American and Latino Members of Congress",
+    subtitle = "Year: {frame_time}",
+    x = NULL,
+    y = "Number of Members"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  transition_time(year) +
+  ease_aes("cubic-in-out")
+
+animate(
+  race_plot,
+  nframes = 120,
+  fps = 10,
+  width = 800,
+  height = 600,
+  renderer = gifski_renderer()
+)
+```
+### Representation is changing, but the story does not end at representation
+
+The data show changes in African American and Latino representation over time. This means that the people represented in Congress became more diverse across the period studied.
+
+However, representation and political influence are not necessarily the same thing. Having members from different demographic groups in Congress tells us who is present, but it does not tell us who holds positions of influence.
+
+That leads to the next part of the story: experience and political power.
+
+### Seniority Over Time
+
+```{r seniority-animation}
+seniority_data <- cess_analysis %>%
+  filter(!is.na(seniority))
+
+seniority_plot <- ggplot(
+  seniority_data,
+  aes(x = "", y = seniority)
+) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.15, outlier.alpha = 0.3) +
+  labs(
+    title = "Seniority of Members of Congress Over Time",
+    subtitle = "Year: {frame_time}",
+    x = NULL,
+    y = "Seniority (Years)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  transition_time(year) +
+  ease_aes("cubic-in-out")
+
+animate(
+  seniority_plot,
+  nframes = 120,
+  fps = 10,
+  width = 800,
+  height = 600,
+  renderer = gifski_renderer()
+)
+```
+### Experience accumulates inside Congress
+
+Unlike vote share, which is determined during an election, seniority develops over time. Members who remain in Congress for several terms accumulate experience within the institution.
+
+This raises a natural question: does staying longer in Congress also relate to having greater political influence?
+
+The next visualization explores the relationship between seniority and the measure of political power recorded in the dataset.
+
+### Seniority and Political Power
+
+```{r seniority-power}
+ggplot(
+  cess_analysis %>% filter(!is.na(seniority), !is.na(power)),
+  aes(x = seniority, y = as.numeric(as.character(power)))
+) +
+  geom_jitter(width = 0.2, height = 0.08, alpha = 0.15) +
+  geom_smooth(method = "loess", se = TRUE) +
+  scale_y_continuous(
+    breaks = c(0, 1),
+    labels = c("No Power", "Power")
+  ) +
+  labs(
+    title = "Does Experience Translate into Political Power?",
+    subtitle = "Relationship between congressional seniority and power",
+    x = "Seniority (Years)",
+    y = "Political Power"
+  ) +
+  theme_minimal()
+```
+### Does experience translate into political power?
+
+The visualization suggests a relationship between congressional experience and political power. Members with different levels of seniority do not appear to have the same likelihood of being classified as having political power.
+
+However, this graph is exploratory. It shows a relationship in the data rather than proving that additional years in Congress cause a member to become more powerful.
+
+This distinction becomes important when we look at political power by party and then use statistical models to examine these relationships more systematically.
+
+### Political Power by Party Over Time
+
+```{r party-power-animation}
+party_power <- cess_analysis %>%
+  filter(!is.na(power)) %>%
+  group_by(year, dem) %>%
+  summarise(
+    power_pct = mean(as.numeric(as.character(power))) * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(Party = ifelse(dem == "1", "Democratic", "Republican"))
+
+party_power_plot <- ggplot(
+  party_power,
+  aes(x = Party, y = power_pct, fill = Party)
+) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = paste0(round(power_pct, 1), "%")),
+            vjust = -0.4, size = 4) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    expand = expansion(mult = c(0, 0.08))
+  ) +
+  labs(
+    title = "Political Power by Party",
+    subtitle = "Year: {frame_time}",
+    x = NULL,
+    y = "Members with Political Power (%)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  transition_time(year) +
+  ease_aes("cubic-in-out")
+
+animate(
+  party_power_plot,
+  nframes = 120,
+  fps = 10,
+  width = 800,
+  height = 600,
+  renderer = gifski_renderer()
+)
+```
+### From individual experience to party power
+
+Political influence is not only an individual characteristic. It also exists within the wider structure of party politics.
+
+The distribution of political power across Democrats and Republicans changes over time alongside the changing party composition of Congress. This suggests that institutional influence is connected to the political environment in which members operate.
+
+The final step before the statistical analysis is therefore to look at the most concentrated form of influence: congressional leadership.
+
+### Leadership Positions Over Time
+
+```{r leadership-heatmap}
+leadership_data <- cess_analysis %>%
+  group_by(year) %>%
+  summarise(
+    Speaker = mean(as.numeric(as.character(speaker)), na.rm = TRUE) * 100,
+    Committee_Chair = mean(as.numeric(as.character(chair)), na.rm = TRUE) * 100,
+    Subcommittee_Chair = mean(as.numeric(as.character(subchr)), na.rm = TRUE) * 100,
+    Majority_Leader = mean(as.numeric(as.character(maj_leader)), na.rm = TRUE) * 100,
+    Minority_Leader = mean(as.numeric(as.character(min_leader)), na.rm = TRUE) * 100,
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -year,
+    names_to = "Leadership_Position",
+    values_to = "Percentage"
+  )
+
+ggplot(
+  leadership_data,
+  aes(x = year, y = Leadership_Position, fill = Percentage)
+) +
+  geom_tile() +
+  geom_text(aes(label = round(Percentage, 1)), size = 3) +
+  scale_fill_gradient(name = "Percentage (%)") +
+  labs(
+    title = "Leadership Positions in Congress Over Time",
+    subtitle = "Percentage of members holding each leadership position",
+    x = "Year",
+    y = "Leadership Position"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+### Power becomes concentrated in leadership
+
+The leadership data show that formal positions such as Speaker, committee chair, and party leadership are held by only a small share of congressional members.
+
+This gives us the final part of the institutional story. Winning an election gets a member into Congress, but election victory does not automatically mean that the member holds a leadership position or substantial institutional power.
+
+The analysis has therefore moved from the ballot box to the structure of Congress itself.
+
+### Congressional Leadership Structure
+
+```{r leadership-over-time}
+leadership_share <- cess_analysis %>%
+  mutate(
+    Leadership = case_when(
+      speaker == "1" ~ "Speaker",
+      maj_leader == "1" ~ "Majority Leader",
+      min_leader == "1" ~ "Minority Leader",
+      chair == "1" ~ "Committee Chair",
+      TRUE ~ "No Leadership Position"
+    )
+  ) %>%
+  count(year, Leadership) %>%
+  group_by(year) %>%
+  mutate(Percentage = n / sum(n) * 100) %>%
+  ungroup()
+
+p_leadership <- ggplot(
+  leadership_share,
+  aes(x = Leadership, y = Percentage, fill = Leadership)
+) +
+  geom_col() +
+  labs(
+    title = "Congressional Leadership Structure Over Time",
+    subtitle = "Year: {closest_state}",
+    x = NULL,
+    y = "Share of Members (%)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1),
+        legend.position = "none") +
+  transition_states(
+    year,
+    transition_length = 2,
+    state_length = 1
+  ) +
+  ease_aes("cubic-in-out")
+
+animate(
+  p_leadership,
+  nframes = 100,
+  fps = 10,
+  width = 900,
+  height = 600,
+  renderer = gifski_renderer()
+)
+```
+## From the Ballot Box to Political Power
+
+So far, the visualizations have built a broader picture of congressional politics.
+
+We began with **who is represented in Congress**. We then saw that **party control changes over time** and that individual members can receive very different levels of electoral support. The analysis then moved beyond elections to show how **seniority, political power, and leadership** are distributed inside Congress.
+
+The story now becomes more specific: are the patterns we see in the visualizations also visible when several characteristics are considered at the same time?
+
+To answer this, the analysis uses regression models. These models do not tell us that one characteristic causes an election result. Instead, they allow us to examine whether characteristics remain associated with electoral outcomes after accounting for the other variables included in the model.
+
+## 4. Econometric Analysis
+
+### OLS Model: Electoral Performance
+
+The dependent variable is vote percentage. The explanatory variables are party affiliation, gender, African American representation, Latino representation, majority-party status, and seniority.
+
+```{r model-data}
+model_data <- cess_analysis %>%
+  select(votepct, dem, female, afam, latino, majority, seniority) %>%
+  na.omit()
+
+cat("Complete observations used in the regression models:", nrow(model_data))
+```
+
+```{r descriptive-model-data}
+summary(model_data)
+```
+
+```{r model1}
+model1 <- lm(
+  votepct ~ dem + female + afam + latino + majority + seniority,
+  data = model_data
+)
+
+summary(model1)
+```
+
+The OLS model is statistically significant overall (F-test p < 0.001), with an R-squared of approximately 0.127. This indicates that the included variables explain about 12.7% of the variation in vote percentage. All six explanatory variables are statistically significant in the model.
+
+## What Is Associated With Vote Share?
+
+The OLS results provide statistical evidence for the patterns seen in the earlier visualizations.
+
+Holding the other variables in the model constant, Democratic affiliation is associated with about a 1.66 percentage-point higher vote share than the reference party. Majority-party membership is associated with about a 2.82 percentage-point higher vote share, while each additional year of seniority is associated with about a 0.72 percentage-point increase.
+
+The model also shows associations between demographic characteristics and vote share. Female candidates have an estimated 1.36 percentage-point lower vote share, while African American and Latino candidates have estimated vote shares about 12.23 and 5.60 percentage points higher, respectively, after accounting for the other variables in the model.
+
+These results should be interpreted as statistical associations, not as evidence that these characteristics themselves cause candidates to receive more or fewer votes.
+
+### Multicollinearity
+
+```{r vif-check}
+vif(model1)
+```
+
+All VIF values are close to 1, indicating no evidence of problematic multicollinearity among the explanatory variables.
+
+### OLS Diagnostics
+
+```{r model1-diagnostics}
+par(mfrow = c(2, 2))
+plot(model1)
+par(mfrow = c(1, 1))
+```
+
+The diagnostic plots indicate departures from normality and possible non-constant variance.
+
+### Breusch-Pagan Test
+
+```{r bp-test}
+bptest(model1)
+```
+
+The Breusch-Pagan test is statistically significant (BP = 135.37, p < 0.001), so the null hypothesis of constant error variance is rejected. The model therefore exhibits heteroskedasticity.
+
+##Does the Relationship Behave the Same Across Candidates?
+
+Before interpreting the OLS model as a complete picture, we also need to check whether the variability of the regression errors is constant. The Breusch–Pagan test strongly rejects homoskedasticity (BP = 135.37, p < 2.2 × 10⁻¹⁶).
+
+This suggests that the amount of unexplained variation in vote share differs across observations. Therefore, conventional OLS standard errors may not be reliable, and robust standard errors are used for inference.
+
+### Heteroskedasticity-Robust Standard Errors
+
+```{r robust-se}
+coeftest(model1, vcov = vcovHC(model1, type = "HC1"))
+```
+### Checking whether the evidence is reliable
+
+The regression diagnostics show that the amount of unexplained variation is not constant across observations. The Breusch–Pagan test confirms this problem, so conventional standard errors would not be the safest choice for inference.
+
+Robust standard errors are therefore used. Importantly, the main conclusions remain the same: the estimated relationships remain statistically significant.
+
+In simple terms, the model was adjusted to account for the uneven variability in the data, and the main findings still hold.
+
+### Logistic Regression: Majority-Party Membership
+
+A logistic regression is estimated with majority-party membership as the dependent variable. The model estimates how party affiliation, gender, race/ethnicity, seniority, and vote percentage are associated with the probability of being in the majority party.
+
+#But Winning More Votes Is Not the Only Question
+
+Vote share tells us how strongly a candidate performed. However, elections also involve a more direct political outcome: whether the candidate belongs to the majority party.
+
+
+```{r model2}
+model2 <- glm(
+  majority ~ dem + female + afam + latino + seniority + votepct,
+  data = model_data,
+  family = binomial
+)
+
+summary(model2)
+```
+#A Different Pattern Emerges
+
+The logistic regression reveals that the factors associated with majority-party status are not identical to those associated with vote share.
+
+Democratic affiliation has an odds ratio of approximately 1.89, meaning that, holding the other variables constant, Democratic candidates have substantially higher estimated odds of being classified as belonging to the majority party in this sample.
+
+Female candidates have an odds ratio of approximately 0.55, while African American and Latino candidates have odds ratios of approximately 0.36 and 0.44, respectively. Seniority has a small negative association with the odds of majority-party status, while vote percentage has a positive association: each additional percentage point of vote share is associated with approximately a 1.8% increase in the odds of majority-party status.
+
+
+### Odds Ratios
+
+```{r odds-ratios}
+exp(cbind(
+  OR = coef(model2),
+  confint(model2)
+))
+```
+#Can These Characteristics Actually Predict Majority Status?
+
+Finding statistically significant relationships is one thing. The next question is whether those relationships are useful for prediction.
+
+The logistic model correctly classifies a substantial share of observations, with an overall classification accuracy of approximately 59.8%. The confusion matrix also shows that the model identifies many majority-party observations correctly, although it makes a considerable number of incorrect classifications.
+
+### Classification Performance
+
+```{r classification}
+predicted_prob <- predict(model2, type = "response")
+predicted_class <- ifelse(predicted_prob >= 0.5, 1, 0)
+
+table(
+  Actual = model_data$majority,
+  Predicted = predicted_class
+)
+
+accuracy <- mean(
+  predicted_class == as.numeric(as.character(model_data$majority))
+)
+
+accuracy
+```
+
+The classification accuracy is approximately 59.8%.
+
+## Conclusion: From the Ballot Box to Political Power
+
+This project began with a simple question: what does the data tell us about congressional elections?
+
+The answer is that there is no single story of electoral success.
+
+The first part of the analysis showed that Congress itself changes over time. The representation of different demographic groups changes, and the balance between Democrats and Republicans shifts across the years. This means that congressional elections do more than determine individual winners — they gradually change the composition and political balance of the institution.
+
+The second part of the analysis looked at individual electoral performance. Candidates in the dataset received very different shares of the vote, and party affiliation was associated with differences in vote share. The OLS model also found significant associations between vote share and gender, race/ethnicity, majority-party status, and seniority.
+
+But the most important finding is that these characteristics do not tell the whole story. The model explains only about 12.7% of the variation in vote share. In other words, elections are much more complicated than the characteristics included in this dataset. Local political conditions, opponents, campaign resources, district competitiveness, incumbency, and many other factors can also shape electoral outcomes.
+
+The story then moves beyond the election itself.
+
+Once members enter Congress, political influence is not distributed equally. Seniority, political power, and leadership positions show that there is another layer of congressional politics after the votes have been counted. Winning an election gets a member into Congress, but it does not automatically place that member in a position of institutional influence.
+
+The logistic regression adds another perspective. Majority-party membership is a different political outcome from vote share, and the factors associated with the two outcomes are not identical. Party affiliation and vote percentage are positively associated with majority-party status, while the other variables in the model show different relationships. The model correctly classifies about 59.8% of observations, suggesting that these characteristics contain useful information, but are not sufficient to accurately predict majority-party membership on their own.
+
+Overall, the evidence tells a broader story:
+
+**Elections determine who enters Congress. Party balance determines who forms the majority. Experience and institutional structures shape who gains influence. And leadership positions show where that influence becomes concentrated.**
+
+The project therefore moves from the **ballot box to the institution**. It shows that understanding congressional politics requires looking not only at who receives votes, but also at who is represented, which party holds power, how experience accumulates, and who eventually occupies positions of leadership.
+
+Finally, all of these findings should be understood as associations observed in the data rather than proof of cause and effect. The analysis identifies patterns across congressional observations from 1973–2018, but it does not capture every factor that influences elections or political power.
