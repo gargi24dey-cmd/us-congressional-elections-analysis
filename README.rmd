@@ -180,8 +180,6 @@ U.S.-Congressional-Elections/
 │   ├── seniority-power.png
 │   └── leadership.png
 │
-├── outputs/
 │
 ├── U.S. Congressional Elections.Rmd
-├── README.md
-└── .gitignore
+└── README.md
